@@ -1,4 +1,3 @@
-import React from 'react'; 
 import { useState, useCallback, useMemo } from "react";
 
 // ═══════════════════════════════════════════════════════════════
@@ -12,7 +11,8 @@ function generateProtocol(data) {
     esameUrineNitrati, esameUrineLeucociti, sintomiUrinari, sintomiVaginali, precedenteNeonatoGBS,
     precedentePTB, g6pd, tempPersistente, tamponeDisponibile, sintomiVaginaliDettaglio,
     batteriuriaGBS, tcElettivoMI, ivuRicorrenti, cerchiaggio, gbsPrecedenteGrav,
-    saccoInVagina, dilatazioneCervicale, idronefrosiGrado, doloreColica } = data;
+    saccoInVagina, dilatazioneCervicale, idronefrosiGrado, doloreColica,
+    emocoltura, emocolturaGerme } = data;
 
   const trimestre = eg < 14 ? 1 : eg < 28 ? 2 : 3;
   const aTermine = eg >= 37;
@@ -64,8 +64,36 @@ function generateProtocol(data) {
     results.alerts.push({ type: "danger", text: "Batteriuria GBS in questa gravidanza (qualsiasi carica) → IAP OBBLIGATORIA al parto (ACOG CO #797). Trattare come GBS positiva" });
   }
 
-  // ═══ CORIOAMNIONITE CHECK (priorità massima) ═══
-  if (scenario === "travaglio" || scenario === "pprom" || scenario === "promTermine") {
+  // ═══ EMOCOLTURA POSITIVA — cross-scenario (SEPSI fino a prova contraria) ═══
+  if (emocoltura === "positiva" && emocolturaGerme) {
+    results.diagnosi.push({ label: `EMOCOLTURA POSITIVA: ${emocolturaGerme} — SEPSI fino a prova contraria`, severity: "danger",
+      detail: "Emocoltura positiva = batteriemia documentata. Consulenza infettivologica URGENTE. Terapia mirata all'antibiogramma dell'emocoltura" });
+    results.alerts.push({ type: "danger", text: `SEPSI da ${emocolturaGerme}: richiedere antibiogramma dell'emocoltura se non disponibile. Monitoraggio emodinamico materno. Terapia empirica ad ampio spettro fino ad antibiogramma: Tazocin® 4,5g IV/6h (se non allergia β-latt) O Meropenem 1g IV/8h` });
+    results.alerts.push({ type: "danger", text: "Consulenza infettivologica URGENTE — la gestione della sepsi in gravidanza richiede collaborazione multidisciplinare" });
+    results.monitoraggio.push("Emocolture di controllo dopo 48-72h di terapia", "Lattati, procalcitonina, emocromo seriati", "Monitoraggio emodinamico materno (PA, FC, diuresi)");
+  } else if (emocoltura === "positiva") {
+    results.alerts.push({ type: "danger", text: "EMOCOLTURA POSITIVA — inserire il germe isolato per ricevere raccomandazioni terapeutiche mirate" });
+  }
+
+  // ═══ GBS NELLE URINE — cross-scenario ═══
+  if (urocoltura && urocoltura.toLowerCase().includes("gbs") && (scenario === "ivu" || scenario === "colicaRenale")) {
+    results.alerts.push({ type: "danger", text: "GBS nelle urine (QUALSIASI carica) → IAP OBBLIGATORIA AL PARTO (ACOG CO #797). GBS in urina = marker di colonizzazione anogenitale importante. NON serve tampone VR a 36-37s" });
+    results.alerts.push({ type: "warning", text: "Se ≥10⁵ UFC/mL o sintomatica: TRATTARE la IVU (amoxicillina o cefalexina × 7gg). Se <10⁵ asintomatica: NON trattare antepartum, ma IAP al parto COMUNQUE" });
+    results.alerts.push({ type: "info", text: "Anche se trattata e urinocoltura di controllo negativa → IAP al parto COMUNQUE. La ricolonizzazione dopo antibiotici è tipica (ACOG CO #797). GBS batteriuria = indicazione PERMANENTE per IAP in questa gravidanza" });
+  }
+
+  // ═══ GBS POSITIVO AL TAMPONE VR — NON trattare antepartum ═══
+  if (gbsStatus === "positivo" && scenario !== "travaglio" && scenario !== "pprom" && scenario !== "promTermine") {
+    results.alerts.push({ type: "danger", text: "GBS al tampone VR: NON trattare antepartum per eradicare la colonizzazione (ACOG CO #797: 'antimicrobial agents should not be used before the intrapartum period to eradicate GBS colonization'). Il trattamento orale è inefficace (ricolonizzazione tipica) e promuove resistenza. IAP IV al momento del travaglio/parto" });
+  }
+
+  // ═══ GBS POSITIVO — sensibilità clindamicina ═══
+  if (gbsStatus === "positivo" && (!tamponeCV_ABG || !tamponeCV_ABG.clindamicina || tamponeCV_ABG.clindamicina === "non_testata")) {
+    results.alerts.push({ type: "warning", text: "GBS positivo: sensibilità alla CLINDAMICINA non nota. Richiedere ATTIVAMENTE l'antibiogramma al laboratorio — molti lab non testano clindamicina di routine per GBS, serve richiesta specifica. Se non disponibile al parto e paziente allergica → ACOG CO #797 raccomanda vancomicina (per precauzione, NON perché il ceppo è resistente)" });
+  }
+
+  // ═══ CORIOAMNIONITE / INFEZIONE CHECK (priorità massima — cross-scenario) ═══
+  if (scenario === "travaglio" || scenario === "pprom" || scenario === "promTermine" || scenario === "incompCervicale" || scenario === "colicaRenale") {
     const criteriCorio = [];
     if (febbreAlta) criteriCorio.push("T ≥39°C singola");
     if (febbreSospetta) criteriCorio.push("T 38-38,9°C persistente ≥30min");
@@ -74,21 +102,75 @@ function generateProtocol(data) {
     if (tachicardiaFetale) criteriAccessori.push("tachicardia fetale >160 bpm");
     if (sintomiVaginali === "scolo_purulento") criteriAccessori.push("scolo cervicale purulento");
 
+    // ═══ A: CRITERI FORMALI ACOG CPU 2024 SODDISFATTI ═══
     if ((febbreAlta || febbreSospetta) && criteriAccessori.length >= 1) {
       results.diagnosi.push({ label: "SOSPETTA CORIOAMNIONITE / IUI", severity: "danger",
         detail: `Criteri ACOG CPU luglio 2024: ${criteriCorio.join(" + ")} + ${criteriAccessori.join(", ")}` });
       results.protocollo.push({ label: "Trattamento IMMEDIATO — Non ritardare il parto", items: [
-        { drug: "Ampicillina (Amplital®)", dose: "2g IV ogni 6 ore", notes: "Carico immediato" },
+        { drug: "Ampicillina (Amplital®)", dose: "2g IV ogni 6 ore", notes: "Carico immediato. Copre anche GBS" },
         { drug: "Gentamicina (Gentalyn®)", dose: "5mg/kg IV ogni 24 ore", notes: "Dose unica giornaliera" },
       ]});
       results.alerts.push({ type: "danger", text: "Se TC: AGGIUNGERE Clindamicina (Dalacin®) 900mg IV ogni 8h dopo clampaggio" });
       results.alerts.push({ type: "danger", text: "Post parto vaginale: 1 dose poi STOP. Post TC: fino apiressia ≥24h" });
-      results.alerts.push({ type: "danger", text: "NON ritardare il parto per completare l'antibiotico" });
+      results.alerts.push({ type: "danger", text: "NON ritardare il parto per completare l'antibiotico. L'ampicillina per IUI copre anche il GBS — NON aggiungere Penicillina G separata" });
       if (wbc <= 15000 && !febbre) {
         results.alerts.push({ type: "warning", text: "NOTA: 73% delle sepsi da IUI è apirettica (Higgins 2016). Valutare clinicamente anche senza febbre" });
       }
       results.fonti.push("ACOG CPU luglio 2024", "ACOG CO #712 2017", "Cochrane CD007838");
-      return results;
+      // Per scenari ostetrici: la corioamnionite sovrascrive tutto → return
+      // Per scenari NON ostetrici (colica, IC): aggiungere alert ma proseguire con motore scenario-specifico
+      if (scenario === "travaglio" || scenario === "pprom" || scenario === "promTermine") {
+        return results;
+      }
+      // Per IC e colicaRenale: febbre + leucocitosi possono essere da infezione UROLOGICA, non necessariamente IUI
+      if (scenario === "incompCervicale") {
+        results.alerts.push({ type: "danger", text: "Con segni infettivi + IC: ESCLUDERE IUI → se confermata: rimozione cerchiaggio + espletamento. Se infezione NON intra-uterina (es. pielo): trattare la causa + monitoraggio per IUI" });
+      }
+      if (scenario === "colicaRenale") {
+        results.alerts.push({ type: "warning", text: "⚠ Febbre + leucocitosi in contesto di patologia urologica: più probabile pielonefrite/pionefrosi che corioamnionite. Tuttavia ESCLUDERE IUI concomitante (CTG, speculum, PCR seriata). Proseguire con gestione urologica + antibiotici mirati" });
+      }
+    }
+
+    // ═══ B: CRITERI FORMALI NON SODDISFATTI MA QUADRO INFETTIVO SOSPETTO ═══
+    // T 37.5-37.9 + leucocitosi marcata, OPPURE leucocitosi + CRP elevata senza febbre
+    const subFebbre = temperatura >= 37.5 && temperatura < 38;
+    const leucocitosiMarcata = wbc > 20000;
+    const crpElevata = crp > 10;
+    const sospettoInfettivo = (subFebbre && leucocitosi) || (subFebbre && crpElevata) || (leucocitosiMarcata && crpElevata) || (leucocitosiMarcata && subFebbre);
+
+    if (sospettoInfettivo) {
+      const markers = [];
+      if (subFebbre) markers.push(`T ${temperatura}°C (sub-febbrile)`);
+      if (leucocitosi) markers.push(`WBC ${wbc ? wbc.toLocaleString() : '>15.000'}/mm³`);
+      if (crpElevata) markers.push(`PCR ${crp} mg/L`);
+      if (tachicardiaFetale) markers.push("tachicardia fetale");
+
+      results.diagnosi.push({ label: "⚠ SOSPETTO INFETTIVO — non soddisfa formalmente i criteri ACOG CPU 2024 ma quadro clinico altamente suggestivo", severity: "danger",
+        detail: `Marcatori: ${markers.join(", ")}. I criteri ACOG CPU 2024 servono per la CLASSIFICAZIONE, non per la decisione terapeutica. Con questo quadro: TRATTARE come sospetta IUI` });
+
+      results.protocollo.push({ label: "Iniziare Amplital® — rivalutare a 30 min per escalation", items: [
+        { drug: "Ampicillina (Amplital®)", dose: "2g IV ogni 6 ore fino al parto", notes: "Copre GBS + principali patogeni IUI. NON aggiungere IAP separata" },
+        { drug: "⏱ Rivalutare a 30 min", dose: "Ricontrollare temperatura + CTG", notes: "Se T ≥38°C confermata → AGGIUNGERE Gentalyn® 5mg/kg IV ogni 24h (regime IUI completo ACOG)" },
+      ]});
+      results.alerts.push({ type: "danger", text: `ATTENZIONE: T ${temperatura}°C è appena sotto la soglia ACOG (38°C), ma WBC ${wbc ? wbc.toLocaleString() : 'elevati'} e PCR ${crp || 'elevata'} indicano un processo infettivo in corso. Ricontrollare T a 30 min — se ≥38°C aggiungere Gentalyn® (regime IUI completo)` });
+      results.alerts.push({ type: "info", text: "L'ampicillina 2g IV/6h copre GBS — non serve IAP separata. Se la temperatura NON sale e il quadro migliora, l'ampicillina da sola è sufficiente" });
+      results.alerts.push({ type: "warning", text: "Se TC: aggiungere Dalacin® 900mg IV al clampaggio. Post parto vaginale: 1 dose poi STOP. Post TC: fino apiressia ≥24h" });
+      results.alerts.push({ type: "warning", text: "Richiedere EMOCOLTURE (2 set da siti diversi) se non già eseguite — prima della dose antibiotica se possibile ma senza ritardare il trattamento" });
+      if (!gbsStatus || gbsStatus === "ignoto") {
+        results.alerts.push({ type: "info", text: "GBS ignoto: l'ampicillina che stai dando copre il GBS. Prelevare tampone VR per gestione neonatale" });
+      }
+      results.fonti.push("ACOG CPU luglio 2024", "ACOG CO #712 2017", "Higgins ObGyn 2016");
+      if (scenario === "travaglio" || scenario === "pprom" || scenario === "promTermine") {
+        return results;
+      }
+    }
+
+    // ═══ C: FEBBRE ISOLATA O LEUCOCITOSI ISOLATA — alert senza override ═══
+    if (febbre && criteriAccessori.length === 0) {
+      results.alerts.push({ type: "warning", text: `Febbre materna isolata (${temperatura}°C) — ricontrollare a 30 min (ACOG CPU 2024). Se persistente + ≥1 criterio accessorio → sospetta IUI. Intanto: IAP GBS se indicata + monitoraggio stretto` });
+    }
+    if (leucocitosi && !febbre && !subFebbre) {
+      results.alerts.push({ type: "warning", text: `Leucocitosi isolata (WBC ${wbc ? wbc.toLocaleString() : '>15.000'}) senza febbre — può essere fisiologica in travaglio (fino a 20.000). Se >20.000 o in aumento: sospettare infezione subclinica` });
     }
   }
 
@@ -125,9 +207,20 @@ function generateProtocol(data) {
         }
         results.alerts.push({ type: "info", text: `Antibiogramma disponibile: adattare step-down orale al profilo di sensibilità del germe isolato (${urocoltura})` });
       }
-      results.protocollo.push({ label: "Terapia soppressiva post-pielonefrite", items: [
-        { drug: "Nitrofurantoina (Neofuradantin®) o Cefalexina (Keforal®)", dose: "100mg o 250-500mg per os alla sera per il RESTO della gravidanza", notes: "Stop nitrofurantoina a 36-38s. Se G6PD: solo cefalexina" },
-      ]});
+      const soppressivaItems = [];
+      if (!allergiaBetalatt && !g6pd) {
+        soppressivaItems.push({ drug: "Nitrofurantoina (Neofuradantin®) o Cefalexina (Keforal®)", dose: "100mg o 250-500mg per os alla sera per il RESTO della gravidanza", notes: "Stop nitrofurantoina a 36-38s. Se G6PD: solo cefalexina" });
+      } else if (allergiaAlto || allergiaBasso) {
+        // β-latt allergia → no cefalexina → solo nitrofurantoina (se non G6PD)
+        if (!g6pd) {
+          soppressivaItems.push({ drug: "Nitrofurantoina (Neofuradantin®)", dose: "100mg per os alla sera per il RESTO della gravidanza", notes: "Allergia β-latt → cefalexina CI. Stop nitrofurantoina a 36-38s" });
+        } else {
+          soppressivaItems.push({ drug: "Consulenza infettivologica per soppressiva", dose: "G6PD+ e allergia β-latt → nessun soppressivo standard disponibile", notes: "Nitrofurantoina CI (G6PD), cefalexina CI (allergia β-latt). Monitoraggio urinocoltura seriato in alternativa" });
+        }
+      } else if (g6pd) {
+        soppressivaItems.push({ drug: "Cefalexina (Keforal®)", dose: "250-500mg per os alla sera per il RESTO della gravidanza", notes: "G6PD+ → nitrofurantoina CI. Solo cefalexina" });
+      }
+      results.protocollo.push({ label: "Terapia soppressiva post-pielonefrite", items: soppressivaItems });
       results.alerts.push({ type: "danger", text: "Mancata risposta 48-72h → eco renale → escludere ostruzione → stent JJ / nefrostomia" });
       results.alerts.push({ type: "warning", text: "Fosfomicina e Nitrofurantoina: MAI per pielonefrite (non raggiungono il parenchima renale)" });
       results.monitoraggio.push("Emocromo, PCR, funzione renale ogni 24h", "Urinocoltura di controllo 1-2 settimane dopo fine terapia", "Eco renale se non risposta 48-72h");
@@ -175,11 +268,16 @@ function generateProtocol(data) {
             }
           }
         }
-        // IV — per pielonefrite
-        if (uroABG.ceftriaxone === "S") sensibili.push({ drug: "Ceftriaxone (Rocefin®)", dose: "1-2g IV ogni 24h", duration: "fino apiressia 48h → step-down orale", notes: "Per pielonefrite o IVU complicata (ACOG CC No.4 2023)" });
-        if (uroABG.gentamicina === "S") sensibili.push({ drug: "Gentamicina (Gentalyn®)", dose: "5mg/kg IV ogni 24h", duration: "fino apiressia 48h (con TDM)", notes: "Alternativa IV per pielonefrite. Nefro/ototossicità con cicli prolungati" });
+        // IV — solo per pielonefrite o se NO opzioni orali
+        const sensibiliOrali = sensibili.filter(s => !s.drug.includes("IV") && s.dose !== "CONTROINDICATO" && s.dose !== "EVITARE");
+        if (uroABG.ceftriaxone === "S") sensibili.push({ drug: "Ceftriaxone (Rocefin®)", dose: "1-2g IV ogni 24h", duration: "fino apiressia 48h → step-down orale", notes: "Solo per pielonefrite o IVU complicata (ACOG CC No.4 2023). NON per cistite semplice di routine" });
+        if (uroABG.gentamicina === "S") sensibili.push({ drug: "Gentamicina (Gentalyn®)", dose: "5mg/kg IV ogni 24h", duration: "fino apiressia 48h (con TDM)", notes: "Solo per pielonefrite o IVU complicata. NON per cistite di routine" });
 
         if (sensibili.length > 0) {
+          // Per cistite: se NESSUN farmaco orale sensibile, avvertire
+          if (sensibiliOrali.length === 0 && !isPielo) {
+            results.alerts.push({ type: "danger", text: `⚠ NESSUN antibiotico ORALE sensibile per ${urocoltura}. Opzioni: (1) Ricovero per terapia IV (ceftriaxone/gentamicina se sensibili). (2) Consulenza infettivologica per alternative (ertapenem 1g IV/die se ESBL+). (3) Se ESBL+: nitrofurantoina può mantenere sensibilità in vitro anche con ESBL — verificare ABG specifico (IDSA cUTI GL 2025)` });
+          }
           results.protocollo.push({ label: `Terapia mirata per ${urocoltura} (antibiogramma disponibile)`, items: sensibili.map(s => ({
             drug: s.drug, dose: s.dose + (s.duration !== "—" ? ` × ${s.duration}` : ""), notes: s.notes
           })) });
@@ -198,9 +296,6 @@ function generateProtocol(data) {
           );
         }
         results.alerts.push({ type: "warning", text: "Amoxicillina da SOLA: MAI empirica (R E. coli 20-40% in IT). Solo con antibiogramma (ACOG CC No.4)" });
-      }
-      if (urocoltura && urocoltura.toLowerCase().includes("gbs")) {
-        results.alerts.push({ type: "danger", text: "GBS nelle urine (qualsiasi carica) → IAP AL PARTO (ACOG CO #797). ≥10⁵ UFC → trattare anche come IVU" });
       }
       results.monitoraggio.push("Urinocoltura di controllo 1-2 settimane dopo fine terapia");
       results.alerts.push({ type: "info", text: "Durata trattamento: 7 giorni (ACOG CC No.4 2023 indica un range di 5-7gg — in gravidanza si preferisce il limite superiore per la farmacocinetica alterata). Eccezione: fosfomicina dose singola (Cochrane Widmer 2015: dati insufficienti per raccomandare una durata specifica)" });
@@ -265,13 +360,39 @@ function generateProtocol(data) {
     if (tx) {
       results.diagnosi.push({ label: tx.diagnosi, severity: "warning", detail: "Terapia per patogeno identificato" });
       results.protocollo.push({ label: `Trattamento ${tx.diagnosi}`, items: tx.items });
+      // ═══ CO-INFEZIONE: se BV + sintomi suggestivi di candidosi (prurito, mista) → aggiungere topico ═══
+      if (pathogen === "bv" && (sintomiVaginaliDettaglio === "mista_aspecifica" || sintomiVaginaliDettaglio === "prurito_eritema")) {
+        results.protocollo.push({ label: "Trattamento co-infezione Candida (sintomi misti)", items: [
+          { drug: "Clotrimazolo (Canesten®) crema 1%", dose: "5g intravag × 7 giorni", notes: "BV + prurito/eritema vulvare = sospetta co-infezione BV+Candida. CDC 2021: trattare entrambe" },
+        ]});
+        results.alerts.push({ type: "info", text: "Alternativa per BV+Candida: Meclon® (metronidazolo 500mg + clotrimazolo 100mg) 1 ovulo intravag/die × 6-10gg — copre entrambe in singola formulazione (pratica clinica IT, non nelle LG internazionali)" });
+      }
+      // Se BV senza sintomi misti: nota comunque sulla possibilità
+      if (pathogen === "bv" && !sintomiVaginaliDettaglio) {
+        results.alerts.push({ type: "info", text: "Se co-infezione candidosica sospetta (prurito vulvare associato): aggiungere clotrimazolo topico × 7gg. Oppure Meclon® che copre BV+Candida in formulazione unica" });
+      }
       tx.alerts.forEach(a => results.alerts.push(a));
     } else {
       // ═══ TERAPIA EMPIRICA — senza tampone o in attesa risultato ═══
       const sd = sintomiVaginaliDettaglio;
-      if (!sd || sd === "asintomatica") {
-        results.diagnosi.push({ label: "Nessun sintomo vaginale — tampone non disponibile", severity: "info", detail: "Se asintomatica: non trattare. Richiedere tampone cervicovaginale per valutazione mirata" });
+      if (sd === "asintomatica") {
+        results.diagnosi.push({ label: "Asintomatica — tampone non disponibile", severity: "info", detail: "Se asintomatica: non trattare. Richiedere tampone cervicovaginale per valutazione mirata" });
         results.alerts.push({ type: "info", text: "Screening BV asintomatica basso rischio: NON raccomandato (USPSTF 2020). Solo se precedente PTB <20s" });
+      } else if (!sd && sintomiVaginali === "si") {
+        // Sintomi presenti ma pattern non specificato → tratta come aspecifico
+        results.diagnosi.push({ label: "TERAPIA EMPIRICA — sintomi aspecifici, tampone non disponibile", severity: "warning", detail: "Pattern clinico non specificato. Richiedere SEMPRE tampone per conferma. Trattamento empirico a copertura ampia" });
+        results.protocollo.push({ label: "Copertura empirica ampia (pattern non specificato)", items: [
+          { drug: "Metronidazolo (Flagyl®)", dose: "500mg per os 2v/die × 7 giorni", notes: "Copre BV + Trichomonas + anaerobi. Sicuro tutti i trimestri (CDC 2021)" },
+          { drug: "Clotrimazolo (Canesten®) crema 1%", dose: "5g intravaginale × 7 giorni", notes: "Copre Candida in associazione" },
+        ]});
+        results.protocollo.push({ label: "ALTERNATIVA: Associazioni vaginali commerciali (pratica IT, non LG internazionali)", items: [
+          { drug: "Meclon® (metronidazolo 500mg + clotrimazolo 100mg)", dose: "1 ovulo intravag/die × 6-10 giorni", notes: "Copre BV + Candida. Prodotto più venduto in IT" },
+          { drug: "Macmiror Complex® (nifuratel 500mg + nistatina 200.000 UI)", dose: "1 ovulo intravag/die × 8-10 giorni", notes: "Alternativa. Copre Trichomonas + Candida" },
+        ]});
+        results.alerts.push({ type: "warning", text: "Tampone cervicovaginale OBBLIGATORIO: BV (Amsel/Nugent), coltura Candida, PCR CT/NG, Mycoplasma/Ureaplasma. La terapia empirica è un PONTE, non il trattamento definitivo" });
+        results.alerts.push({ type: "info", text: "Se sospetto CT/NG (partner a rischio, cervicite mucopurulenta): aggiungere Zitromax® 1g ± Rocefin® 500mg IM" });
+      } else if (!sd) {
+        results.diagnosi.push({ label: "Nessun sintomo vaginale specificato", severity: "info", detail: "Specificare i sintomi per ricevere una terapia empirica mirata, oppure attendere il tampone" });
       } else {
         results.diagnosi.push({ label: "TERAPIA EMPIRICA — in attesa di tampone", severity: "warning", detail: "Trattamento basato sul pattern clinico. Richiedere SEMPRE tampone per conferma e antibiogramma" });
 
@@ -339,7 +460,7 @@ function generateProtocol(data) {
   // ═══ pPROM ═══
   if (scenario === "pprom") {
     const fase = data.fasePprom; // "conservativa" | "travaglio_in_latenza" | "travaglio_post_latenza"
-    results.diagnosi.push({ label: `pPROM a ${eg} settimane${fase ? ` — ${fase === "conservativa" ? "gestione conservativa" : fase === "travaglio_in_latenza" ? "TRAVAGLIO durante latenza antibiotica" : "TRAVAGLIO dopo completamento latenza"}` : ""}`, severity: "danger", detail: `Membrane rotte pretermine — gestione ${periviabile ? "periviabile: counselling" : latePreterm ? "late preterm: ACOG vs RCOG divergono" : "conservativa standard"}` });
+    results.diagnosi.push({ label: `pPROM a ${eg} settimane${fase ? ` — ${fase === "conservativa" ? "gestione conservativa" : fase === "travaglio_esordio" ? "TRAVAGLIO — antibiotici da iniziare" : fase === "travaglio_in_latenza" ? "TRAVAGLIO durante latenza antibiotica" : fase === "travaglio_in_latenza_os" ? "TRAVAGLIO durante fase orale latenza" : "TRAVAGLIO dopo completamento latenza"}` : ""}`, severity: "danger", detail: `Membrane rotte pretermine — gestione ${periviabile ? "periviabile: counselling" : latePreterm ? "late preterm: ACOG vs RCOG divergono" : "conservativa standard"}` });
 
     if (periviabile) {
       results.alerts.push({ type: "danger", text: `EG ${eg}s: counselling con la coppia. Opzioni: interruzione vs gestione conservativa (SMFM CS #71 2024)` });
@@ -382,6 +503,51 @@ function generateProtocol(data) {
       } else {
         results.alerts.push({ type: "info", text: "GBS negativo: se tampone valido (<5 sett), no IAP al travaglio. Se scaduto (>5 sett di latenza) → ripetere" });
       }
+    }
+
+    // ═══ FASE B0: TRAVAGLIO — pPROM APPENA DIAGNOSTICATA, ABX NON INIZIATI ═══
+    if (fase === "travaglio_esordio") {
+      results.diagnosi.push({ label: "TRAVAGLIO + pPROM appena diagnosticata — antibiotici NON ancora iniziati", severity: "danger",
+        detail: "Iniziare SUBITO il regime di latenza: la prima dose IV copre contemporaneamente la latenza E la IAP GBS. NON servono due regimi separati" });
+
+      if (!allergiaBetalatt && !allergiaMacrolidi) {
+        results.protocollo.push({ label: "INIZIARE ORA — Latenza pPROM (copre anche GBS)", items: [
+          { drug: "Amplital® 2g IV", dose: "Prima dose SUBITO, poi ogni 6h fino al parto", notes: "L'ampicillina 2g IV ogni 6h è adeguata sia per latenza che per IAP GBS (CDC 2010; ACOG CO #797)" },
+          { drug: "Zitromax® 1g per os", dose: "Dose singola ORA, contemporanea alla prima dose IV", notes: "Copertura macrolide per la latenza (Seaman AJOG 2022)" },
+        ]});
+        results.alerts.push({ type: "danger", text: "⚠ NON prescrivere Penicillina G separata per IAP GBS. L'ampicillina 2g IV ogni 6h che stai già dando COPRE il GBS. Due regimi sovrapposti sono inutili e confusionanti" });
+      } else if (allergiaAlto) {
+        results.protocollo.push({ label: "INIZIARE ORA — Allergia alto rischio", items: [
+          { drug: "Dalacin® 900mg IV ogni 8h", dose: "Prima dose SUBITO, poi ogni 8h fino al parto", notes: "Se GBS sensibile a clindamicina" },
+          ...(!allergiaMacrolidi ? [{ drug: "Zitromax® 1g per os", dose: "Dose singola ORA", notes: "Copertura macrolide per la latenza" }] : []),
+        ]});
+        if (gbsStatus === "positivo" || gbsStatus === "ignoto" || !gbsStatus) {
+          const gbsClindaR = !tamponeCV_ABG || tamponeCV_ABG.clindamicina !== "S"; // non_testata/R/null → vancomicina per precauzione (ACOG CO #797)
+          if (gbsClindaR) {
+            results.alerts.push({ type: "danger", text: "GBS: clindamicina " + (tamponeCV_ABG?.clindamicina === "R" ? "RESISTENTE" : "sensibilità NON NOTA") + ". ACOG CO #797 raccomanda vancomicina: " + (pesoKg ? `Vancotex® ${Math.min(2000, Math.round(pesoKg * 20 / 100) * 100)}mg` : "Vancotex® 20mg/kg") + " IV ogni 8h (infusione ≥1h)" + (tamponeCV_ABG?.clindamicina !== "R" ? ". NB: non significa che il ceppo sia resistente — la sensibilità è semplicemente non disponibile. Richiedere ABG al laboratorio" : "") });
+          }
+        }
+      } else {
+        // Allergia basso rischio
+        results.protocollo.push({ label: "INIZIARE ORA — Allergia basso rischio", items: [
+          { drug: "Cefamezin® 1g IV ogni 8h", dose: "Prima dose SUBITO, poi ogni 8h fino al parto", notes: "Copre anche GBS" },
+          ...(!allergiaMacrolidi ? [{ drug: "Zitromax® 1g per os", dose: "Dose singola ORA", notes: "Copertura macrolide" }] : []),
+        ]});
+      }
+
+      results.alerts.push({ type: "warning", text: "Obiettivo IAP: ≥4h di antibiotico con copertura GBS prima del parto. Anche 2h = beneficio parziale. MAI ritardare intervento urgente per completare IAP" });
+      results.alerts.push({ type: "info", text: "Se il travaglio si arresta: hai già iniziato la latenza → prosegui il ciclo 7gg (Amplital® IV 48h → Zimox® OS 5gg)" });
+      results.alerts.push({ type: "info", text: "Post-parto vaginale: 1 dose antibiotica poi STOP. Post-TC: aggiungere Dalacin® 900mg IV al clampaggio (copertura anaerobi) → continuare fino apiressia ≥24h" });
+
+      // GBS tampone all'ammissione
+      if (!gbsStatus || gbsStatus === "ignoto") {
+        results.alerts.push({ type: "warning", text: "Prelevare tampone vagino-rettale per GBS ORA (anche se il risultato non sarà disponibile prima del parto — serve per la gestione neonatale)" });
+      }
+
+      // Neonatologo
+      results.alerts.push({ type: "warning", text: "Avvisare neonatologo: pretermine 33s + pPROM + IAP inadeguata (<4h) → EOS risk assessment neonatale (AAP Puopolo 2019)" });
+
+      results.monitoraggio.push("CTG continuo in travaglio", "Emocromo + PCR all'ammissione", "Temperatura ogni 2h — se ≥38°C → sospettare corioamnionite");
     }
 
     // ═══ FASE B: TRAVAGLIO DURANTE LA LATENZA (prime 48h IV) ═══
@@ -475,7 +641,8 @@ function generateProtocol(data) {
         results.diagnosi.push({ label: "IAP GBS INDICATA", severity: "danger", detail: `${gbsStatus === "positivo" ? "GBS positivo" : batteriuriaGBS ? "Batteriuria GBS" : precedenteNeonatoGBS ? "Precedente neonato GBS" : "GBS ignoto + parto pretermine (= FR automatico)"}` });
         if (!allergiaBetalatt) {
           results.protocollo.push({ label: "IAP GBS — latenza completata, regime separato", items: [
-            { drug: "Penicillina G (sodica)", dose: "5 MUI IV carico → 2,5-3 MUI ogni 4h fino al parto", notes: "1ª scelta. Spettro ristretto. Amplital® 2g → 1g ogni 4h come alternativa" },
+            { drug: "Penicillina G (sodica)", dose: "5 MUI IV carico → 2,5-3 MUI ogni 4h fino al parto", notes: "1ª scelta LG (spettro ristretto)" },
+            { drug: "Alternativa pratica: Amplital® (ampicillina)", dose: "2g IV carico → 1g IV ogni 4h fino al parto", notes: "Stessa efficacia IAP. Disponibile in tutte le sale parto" },
           ]});
         } else if (allergiaBasso) {
           results.protocollo.push({ label: "IAP GBS — allergia basso rischio", items: [
@@ -521,11 +688,16 @@ function generateProtocol(data) {
     results.diagnosi.push({ label: `PROM a termine (${eg}s)`, severity: "warning", detail: "NO antibiotici di latenza. Solo IAP GBS se indicata" });
 
     if (gbsStatus === "positivo" || precedenteNeonatoGBS || batteriuriaGBS) {
-      results.diagnosi.push({ label: "GBS POSITIVO — IAP indicata", severity: "danger", detail: gbsStatus === "positivo" ? "Tampone positivo" : batteriuriaGBS ? "Batteriuria GBS in questa gravidanza" : "Precedente neonato con malattia GBS" });
+      const gbsReasons = [];
+      if (gbsStatus === "positivo") gbsReasons.push("Tampone positivo");
+      if (batteriuriaGBS) gbsReasons.push("Batteriuria GBS");
+      if (precedenteNeonatoGBS) gbsReasons.push("Precedente neonato con malattia GBS invasiva");
+      results.diagnosi.push({ label: "GBS POSITIVO — IAP indicata", severity: "danger", detail: gbsReasons.join(" + ") });
       results.alerts.push({ type: "danger", text: "Induzione raccomandata. IAP immediata" });
       if (!allergiaBetalatt) {
         results.protocollo.push({ label: "IAP GBS — 1ª scelta", items: [
-          { drug: "Penicillina G (sodica)", dose: "5 MUI IV carico → 2,5-3 MUI ogni 4h fino al parto", notes: "Spettro ristretto = meno resistenze" },
+          { drug: "Penicillina G (sodica)", dose: "5 MUI IV carico → 2,5-3 MUI ogni 4h fino al parto", notes: "1ª scelta LG — spettro ristretto = meno resistenze" },
+          { drug: "Alternativa: Amplital® (ampicillina)", dose: "2g IV carico → 1g IV ogni 4h fino al parto", notes: "Stessa efficacia per IAP GBS. Più disponibile in IT" },
         ]});
       } else if (allergiaBasso) {
         results.protocollo.push({ label: "IAP GBS — allergia basso rischio", items: [
@@ -556,7 +728,18 @@ function generateProtocol(data) {
         results.alerts.push({ type: "danger", text: `IAP EMPIRICA indicata: ${rotturaLunga ? `rottura ≥18h (${oreRottura}h)` : ""}${febbre ? " + febbre" : ""}${pretermine ? " + pretermine" : ""} (ACOG CO #797)` });
         if (!allergiaBetalatt) {
           results.protocollo.push({ label: "IAP empirica (GBS ignoto + fattori di rischio)", items: [
-            { drug: "Penicillina G (sodica)", dose: "5 MUI IV carico → 2,5-3 MUI ogni 4h fino al parto", notes: "Come GBS positiva" },
+            { drug: "Penicillina G (sodica) o Amplital® (ampicillina)", dose: "Pen G: 5 MUI IV → 2,5-3 MUI/4h OPPURE Amplital® 2g IV → 1g/4h", notes: "Fino al parto. Come GBS positiva" },
+          ]});
+        } else if (allergiaBasso) {
+          results.protocollo.push({ label: "IAP empirica — allergia basso rischio", items: [
+            { drug: "Cefazolina (Cefamezin®)", dose: "2g IV carico → 1g ogni 8h fino al parto", notes: "Cross-reattività ~1-2% (ACOG CO #797)" },
+          ]});
+        } else {
+          const gbsSensClinda = tamponeCV_ABG && tamponeCV_ABG.clindamicina === "S";
+          results.protocollo.push({ label: `IAP empirica — allergia alto rischio`, items: [
+            gbsSensClinda
+              ? { drug: "Clindamicina (Dalacin®)", dose: "900mg IV ogni 8h fino al parto", notes: "Se GBS sensibile a clindamicina" }
+              : { drug: "Vancomicina (Vancotex®)", dose: vancoDosingStr, notes: "GBS R/ignoto clindamicina. Weight-based (ACOG CO #797)" },
           ]});
         }
       } else if (oreRottura && oreRottura < 18) {
@@ -575,14 +758,38 @@ function generateProtocol(data) {
 
   // ═══ TRAVAGLIO (GBS IAP) ═══
   if (scenario === "travaglio") {
+    // ═══ DISTINGUISH TPL (preterm) vs TERM LABOR ═══
+    if (pretermine) {
+      results.diagnosi.push({ label: `Travaglio pretermine a ${eg} settimane — membrane ${membraneStatus === "integre" ? "INTEGRE" : membraneStatus ? "rotte" : "stato da verificare"}`,
+        severity: "danger", detail: "TPL = minaccia di parto pretermine. La gestione antibiotica dipende SOLO dallo stato GBS. NO antibiotici di latenza a membrane integre" });
+    }
+
     if (membraneStatus === "integre" && pretermine) {
-      results.alerts.push({ type: "danger", text: "TPP con MEMBRANE INTEGRE: antibiotici di latenza CONTROINDICATI (ORACLE II: PCI 3,3% vs 1,7%). Solo IAP GBS se indicata" });
+      results.alerts.push({ type: "danger", text: "TPP con MEMBRANE INTEGRE: antibiotici di latenza (Mercer) CONTROINDICATI. ORACLE II Kenyon Lancet 2001: follow-up 7aa → PCI (paralisi cerebrale) 3,3% vs 1,7% con eritromicina. L'unico antibiotico indicato è la IAP GBS se lo stato GBS lo richiede" });
+
+      // ═══ NON-ANTIBIOTIC: CCS + Tocolisi + MgSO₄ ═══
+      const ccsItems = [];
+      if (eg >= 23 && eg < 34) {
+        ccsItems.push({ drug: "Betametasone (Bentelan®)", dose: "12mg IM ogni 24h × 2 dosi", notes: "CCS maturazione polmonare. Finestra: 23+0 — 33+6s. Beneficio massimo 24h-7gg dopo 2ª dose" });
+      } else if (eg >= 34 && eg < 37) {
+        ccsItems.push({ drug: "Betametasone (Bentelan®)", dose: "12mg IM ogni 24h × 2 dosi", notes: "Late preterm CCS (34-36+6): ACOG raccomanda SOLO se no CCS precedenti e parto probabile entro 7gg. SMFM: caso per caso" });
+      }
+      if (eg < 32) {
+        ccsItems.push({ drug: "MgSO₄ — neuroprotezione", dose: "Bolo 4g IV in 20-30min → 1g/h (max 24h)", notes: "Se <32s e parto imminente/probabile. ↓ PCI OR 0,69 (Crowther JAMA 2003). CI: miastenia gravis" });
+      }
+      if (eg < 34) {
+        ccsItems.push({ drug: "Tocolisi — per 48h (per completare CCS)", dose: "Atosiban (Tractocile®) o Nifedipina (Adalat® 20mg) o Indometacina (Indocid® <32s)", notes: "SOLO per permettere CCS. MAI mantenimento. CI: corioamnionite, abruption, travaglio avanzato" });
+      }
+      if (ccsItems.length > 0) {
+        results.protocollo.push({ label: "🫁 Gestione NON antibiotica — CCS / Tocolisi / Neuroprotezione", items: ccsItems });
+      }
     }
     if (gbsStatus === "positivo" || precedenteNeonatoGBS || batteriuriaGBS || (gbsStatus === "ignoto" && (pretermine || febbre || (oreRottura && oreRottura >= 18)))) {
-      results.diagnosi.push({ label: "IAP GBS INDICATA", severity: "danger", detail: gbsStatus === "positivo" ? "GBS positivo" : batteriuriaGBS ? "Batteriuria GBS" : precedenteNeonatoGBS ? "Precedente neonato GBS" : `GBS ignoto con FR${oreRottura ? ` (rottura ${oreRottura}h)` : ""}` });
+      results.diagnosi.push({ label: "IAP GBS INDICATA", severity: "danger", detail: gbsStatus === "positivo" ? "GBS positivo" : batteriuriaGBS ? "Batteriuria GBS" : precedenteNeonatoGBS ? "Precedente neonato GBS" : pretermine && (gbsStatus === "ignoto" || !gbsStatus) ? "GBS ignoto + parto PRETERMINE = fattore di rischio per malattia GBS neonatale (ACOG CO #797)" : `GBS ignoto con FR${oreRottura ? ` (rottura ${oreRottura}h)` : ""}` });
       if (!allergiaBetalatt) {
         results.protocollo.push({ label: "IAP — 1ª scelta", items: [
-          { drug: "Penicillina G (sodica)", dose: "5 MUI IV carico → 2,5-3 MUI ogni 4h fino al parto", notes: "Obiettivo: ≥4h prima del parto" },
+          { drug: "Penicillina G (sodica)", dose: "5 MUI IV carico → 2,5-3 MUI ogni 4h fino al parto", notes: "1ª scelta LG (ACOG CO #797) — spettro ristretto" },
+          { drug: "Alternativa pratica: Amplital® (ampicillina)", dose: "2g IV carico → 1g IV ogni 4h fino al parto", notes: "Equivalente per IAP GBS (ACOG CO #797). Disponibile in tutte le sale parto IT" },
         ]});
       } else if (allergiaBasso) {
         results.protocollo.push({ label: "IAP — allergia basso rischio", items: [
@@ -596,13 +803,26 @@ function generateProtocol(data) {
             : { drug: "Vancomicina (Vancotex®)", dose: vancoDosingStr, notes: "Weight-based ACOG 2020" },
         ]});
       }
+      if (gbsPrecedenteGrav) {
+        results.alerts.push({ type: "info", text: "Nota: GBS+ in gravidanza precedente (50% probabilità colonizzazione attuale — OR 6,05). Rafforza l'indicazione alla IAP" });
+      }
     } else {
       results.diagnosi.push({ label: "IAP GBS NON INDICATA", severity: "info", detail: "GBS negativo valido (<5 sett) o GBS ignoto senza FR" });
       if (gbsPrecedenteGrav && gbsStatus !== "negativo") {
         results.alerts.push({ type: "warning", text: "GBS+ in gravidanza precedente: 50% probabilità di colonizzazione attuale. ACOG: 'considerare' IAP come decisione condivisa se ≥37s con GBS ignoto" });
       }
     }
-    results.fonti.push("ACOG CO #797 2020", "WHO GBS GL 2024");
+    // Notes for preterm labor
+    if (pretermine) {
+      results.alerts.push({ type: "info", text: "Se il travaglio si ARRESTA (tocolisi efficace): STOP IAP. Riprendere al prossimo episodio. Il tampone GBS prelevato oggi sarà utile per la gestione futura" });
+      if (gbsStatus === "negativo") {
+        results.alerts.push({ type: "info", text: "GBS negativo → nessun antibiotico. La gestione del TPL a membrane integre è tocolisi + CCS + MgSO₄ (se <32s). Monitoraggio clinico-laboratoristico per escludere infezione subclinica" });
+      }
+      if (!gbsStatus || gbsStatus === "ignoto") {
+        results.alerts.push({ type: "warning", text: "Prelevare tampone vagino-rettale GBS ORA se non disponibile — anche se il risultato non arriverà prima del parto, guiderà la gestione di episodi futuri e la valutazione neonatale" });
+      }
+    }
+    results.fonti.push("ACOG CO #797 2020", "WHO GBS GL 2024", "ORACLE II Kenyon Lancet 2001");
     return results;
   }
 
@@ -871,7 +1091,15 @@ function generateProtocol(data) {
         } else {
           // Pielonefrite / infezione alta → IV (step-down guidata da ABG)
           if (uroABG.ceftriaxone === "S") sensibiliCR.push({ drug: "Ceftriaxone (Rocefin®)", dose: "1-2g IV ogni 24h", duration: "IV→OS, totale 14gg", notes: "1ª scelta pielo" });
-          if (uroABG.gentamicina === "S") sensibiliCR.push({ drug: "Gentalyn® (gentamicina)", dose: "5mg/kg IV ogni 24h", duration: "IV→OS, totale 14gg", notes: "Con TDM" });
+          if (uroABG.gentamicina === "S") sensibiliCR.push({ drug: "Gentalyn® (gentamicina)", dose: "5mg/kg IV ogni 24h", duration: "IV→OS, totale 14gg", notes: "Con TDM. NON in monoterapia per pionefrosi/sepsi — associare ad altro agente" });
+          // ESBL+ o multi-R → escalation
+          const isESBL = uroABG.esbl || (uroABG.ceftriaxone === "R" && uroABG.amoxclav === "R");
+          if (isESBL || (uroABG.ceftriaxone === "R" && uroABG.gentamicina === "R")) {
+            results.alerts.push({ type: "danger", text: `${urocoltura} multi-resistente${isESBL ? " (ESBL+)" : ""}. Consulenza infettivologica URGENTE. Opzioni: Ertapenem (Invanz®) 1g IV/die (1ª scelta ESBL+ — IDSA cUTI GL 2025), Meropenem 1g IV/8h se sepsi/pionefrosi. Se allergia β-latt: Aztreonam 1g IV/8-12h ± Gentalyn® (consulenza infettivologica)` });
+          }
+          if (dc === "pionefrosi" && sensibiliCR.length === 1 && sensibiliCR[0].drug.includes("Gentalyn")) {
+            results.alerts.push({ type: "danger", text: "⚠ Gentamicina in MONOTERAPIA per pionefrosi è INSUFFICIENTE. La pionefrosi richiede copertura ad ampio spettro: aggiungere almeno un β-lattamico (ertapenem se ESBL+) o aztreonam se allergia. Consulenza infettivologica OBBLIGATORIA" });
+          }
           // Step-down options
           results.alerts.push({ type: "info", text: `Step-down orale dopo apiressia: scegliere tra le molecole orali sensibili all'ABG di ${urocoltura}` });
         }
@@ -891,10 +1119,6 @@ function generateProtocol(data) {
         }
       }
       results.monitoraggio.push("Urinocoltura di controllo 1-2 settimane post-terapia");
-
-      if (urocoltura && urocoltura.toLowerCase().includes("gbs")) {
-        results.alerts.push({ type: "danger", text: "GBS nelle urine → IAP AL PARTO (ACOG CO #797). ≥10⁵ UFC → trattare anche come IVU" });
-      }
     } else if (urocoltura === "in_attesa") {
       results.alerts.push({ type: "warning", text: "Urinocoltura in attesa — NON iniziare antibiotici empirici se paziente apiretica e stabile. Se febbre: iniziare ceftriaxone IV empirico" });
     } else if (!urocoltura) {
@@ -921,6 +1145,259 @@ const SCENARIOS_INPUT = [
   { id: "incompCervicale", label: "Incompetenza Cervicale / Sacco in Vagina", icon: "🔓" },
   { id: "colicaRenale", label: "Colica Renale / Pielectasia / Litiasi", icon: "💎" },
 ];
+
+// ═══════════════════════════════════════════════════════════════
+// SMART CLINICAL SEARCH — keyword matching engine
+// ═══════════════════════════════════════════════════════════════
+
+function parseSmartQuery(query) {
+  const q = query.toLowerCase().replace(/[''`]/g, "'").replace(/[""]/g, '"').trim();
+  const tokens = q.split(/[\s,;./]+/).filter(Boolean);
+  const result = { scenarios: [], fields: {}, interpreted: [] };
+
+  // ═══ HELPER: check if any keyword matches ═══
+  const has = (...words) => words.some(w => q.includes(w));
+  const hasToken = (...words) => tokens.some(t => words.some(w => t === w || t.startsWith(w)));
+
+  // ═══ 1. SCENARI ═══
+
+  // IVU
+  if (has("ivu", "cistite", "pielonefrite", "pielo", "urinari", "urinocoltura", "infezione urin", "vie urinarie") || (has("batteriuria") && !has("batteriuria gbs", "gbs"))) {
+    result.scenarios.push("ivu");
+    if (has("pielo", "pielonefrite")) {
+      result.fields.sintomiUrinari = "pielo";
+      result.interpreted.push("🔬 IVU — pielonefrite");
+    } else if (has("batteriuria asintomatica", "ba ")) {
+      result.fields.sintomiUrinari = null;
+      result.interpreted.push("🔬 Batteriuria asintomatica");
+    } else {
+      result.fields.sintomiUrinari = "si";
+      result.interpreted.push("🔬 IVU — cistite");
+    }
+  }
+
+  // Cervicovaginale
+  if (has("vaginale", "vaginite", "vaginosi", "candida", "candidosi", "cervicite", "cervicovaginale", "tampone cv", "bv ", "trichomonas", "chlamydia", "clamidia", "gonorrea", "ureaplasma", "mycoplasma", "m. hominis")) {
+    result.scenarios.push("cervicovaginale");
+    result.fields.sintomiVaginali = "si";
+    result.interpreted.push("🔎 Infezione cervicovaginale");
+    // Patogeni specifici
+    if (has("candida", "candidosi")) { result.fields.tamponeCVResult = "candida"; result.fields.tamponeDisponibile = "si"; result.interpreted.push("  → Candida"); }
+    else if (has("vaginosi", "bv ")) { result.fields.tamponeCVResult = "bv"; result.fields.tamponeDisponibile = "si"; result.interpreted.push("  → Vaginosi batterica"); }
+    else if (has("chlamydia", "clamidia")) { result.fields.tamponeCVResult = "chlamydia"; result.fields.tamponeDisponibile = "si"; result.interpreted.push("  → Chlamydia"); }
+    else if (has("gonorrea")) { result.fields.tamponeCVResult = "gonorrea"; result.fields.tamponeDisponibile = "si"; result.interpreted.push("  → Gonorrea"); }
+    else if (has("trichomonas")) { result.fields.tamponeCVResult = "trichomonas"; result.fields.tamponeDisponibile = "si"; result.interpreted.push("  → Trichomonas"); }
+    else if (has("ureaplasma")) { result.fields.tamponeCVResult = "ureaplasma"; result.fields.tamponeDisponibile = "si"; result.interpreted.push("  → Ureaplasma"); }
+    else if (has("m. hominis", "mycoplasma hominis", "m hominis")) { result.fields.tamponeCVResult = "m_hominis"; result.fields.tamponeDisponibile = "si"; result.interpreted.push("  → M. hominis"); }
+  }
+
+  // pPROM
+  if (has("pprom", "p-prom", "rottura pretermine", "rottura prematura preterm", "latenza")) {
+    result.scenarios.push("pprom");
+    result.fields.membraneStatus = "rotte_pretermine";
+    result.interpreted.push("💧 pPROM");
+  }
+
+  // PROM a termine — deve distinguere da pPROM
+  if ((has("prom", "rottura membrane", "rottura delle membrane", "membrane rotte") && !has("pprom", "pretermine", "preterm", "latenza"))) {
+    // Check se è a termine o pretermine via EG
+    const egMatch = q.match(/(\d{2}[.,]?\d?)\s*(?:sett|s\b|w\b|settim|\+)/);
+    const eg = egMatch ? parseFloat(egMatch[1].replace(",", ".")) : null;
+    if (eg && eg < 37) {
+      result.scenarios.push("pprom");
+      result.fields.membraneStatus = "rotte_pretermine";
+      result.interpreted.push("💧 pPROM (EG < 37s)");
+    } else {
+      result.scenarios.push("promTermine");
+      result.fields.membraneStatus = "rotte_termine";
+      result.interpreted.push("⏰ PROM a termine");
+    }
+  }
+
+  // Travaglio
+  if (has("travaglio", "in travaglio", "contrazioni", "iap ", "profilassi gbs", "profilassi intrapartum")) {
+    result.scenarios.push("travaglio");
+    result.interpreted.push("🛡️ Travaglio / IAP GBS");
+  }
+
+  // Incompetenza cervicale
+  if (has("incompetenza cervicale", "sacco in vagina", "sacco vagina", "cerchiaggio", "cervice corta", "prolasso membrane", "dilatazione cervicale", "cervical insufficiency")) {
+    result.scenarios.push("incompCervicale");
+    result.interpreted.push("🔓 Incompetenza cervicale");
+    if (has("sacco in vagina", "sacco vagina", "prolasso membrane")) {
+      result.fields.sottoscenarioIC = "sacco_vagina";
+      result.fields.saccoInVagina = true;
+      result.interpreted.push("  → Sacco in vagina");
+    }
+    if (has("cerchiaggio")) { result.fields.cerchiaggio = true; result.interpreted.push("  → Cerchiaggio in situ"); }
+  }
+
+  // Colica renale
+  if (has("colica renale", "colica", "pielectasia", "idronefrosi", "calcolo renale", "litiasi", "pionefrosi", "nefrostomia", "stent jj")) {
+    result.scenarios.push("colicaRenale");
+    result.interpreted.push("💎 Colica renale");
+    if (has("pionefrosi")) { result.fields.doloreColica = "pionefrosi"; result.interpreted.push("  → Pionefrosi"); }
+    else if (has("litiasi ostruttiva", "calcolo ostruttivo")) { result.fields.doloreColica = "litiasi_ostruttiva"; }
+    else if (has("pielectasia")) { result.fields.doloreColica = "pielectasia"; }
+    else { result.fields.doloreColica = "colica_semplice"; }
+  }
+
+  // Corioamnionite (indirizza a travaglio con febbre)
+  if (has("corioamnionite", "iui", "infezione intrauterina", "intra-amniotica")) {
+    if (!result.scenarios.includes("travaglio")) result.scenarios.push("travaglio");
+    result.interpreted.push("🔥 Sospetta corioamnionite");
+    if (!result.fields.temperatura) result.fields.temperatura = 38.5;
+    if (!result.fields.wbc) result.fields.wbc = 20000;
+  }
+
+  // Endometrite / post-partum / mastite / ferita — protocollo cards, non generatore
+  if (has("endometrite", "post-partum", "post partum", "mastite", "ferita", "infezione ferita")) {
+    result.interpreted.push("📋 Per endometrite/mastite/ferita: consulta i 'Protocolli per Scenario'");
+  }
+
+  // TC elettivo
+  if (has("tc elettivo", "cesareo elettivo", "taglio cesareo elettivo", "cesareo programmato")) {
+    if (!result.scenarios.includes("travaglio")) result.scenarios.push("travaglio");
+    result.fields.tcElettivoMI = true;
+    result.interpreted.push("🔪 TC elettivo membrane integre → NO IAP, solo profilassi TC");
+  }
+
+  // ═══ 2. EPOCA GESTAZIONALE ═══
+  const egPatterns = [
+    /(\d{2})[.,](\d)\s*(?:sett|s\b|w\b|settim|\+)/i,
+    /(\d{2})\s*(?:sett|settim|w\b)/i,
+    /(?:eg|epoca|gestaz)[:\s]*(\d{2})[.,]?(\d)?/i,
+    /(\d{2})\+(\d)/,
+    /a\s+(\d{2})\s*(?:sett|s\b)/i,
+  ];
+  for (const pat of egPatterns) {
+    const m = q.match(pat);
+    if (m) {
+      const major = parseInt(m[1]);
+      const minor = m[2] ? parseInt(m[2]) : 0;
+      const eg = major + (minor > 0 && minor < 10 ? minor / (m[0].includes("+") ? 7 : 10) : 0);
+      if (eg >= 4 && eg <= 42) {
+        result.fields.eg = Math.round(eg * 10) / 10;
+        result.interpreted.push(`📅 EG: ${result.fields.eg} settimane`);
+        // Auto-resolve PROM type by EG
+        if (result.fields.eg < 37 && result.scenarios.includes("promTermine")) {
+          result.scenarios = result.scenarios.filter(s => s !== "promTermine");
+          if (!result.scenarios.includes("pprom")) result.scenarios.push("pprom");
+          result.fields.membraneStatus = "rotte_pretermine";
+          result.interpreted.push("  → EG < 37 → convertito in pPROM");
+        }
+        break;
+      }
+    }
+  }
+
+  // ═══ 3. ALLERGIE ═══
+  if (has("allergia penicillin", "allergica penicillin", "allergica a penicillin", "allergia beta-latt", "allergia β-latt", "allergia betalatt")) {
+    if (has("alto rischio", "anafilassi", "angioedema", "alto")) {
+      result.fields.allergie = { stato: "presente", penicilline: "alto" };
+      result.interpreted.push("⚠ Allergia penicilline — ALTO rischio (anafilassi)");
+    } else {
+      result.fields.allergie = { stato: "presente", penicilline: "basso" };
+      result.interpreted.push("⚠ Allergia penicilline — basso rischio (rash)");
+    }
+  }
+  if (has("allergia macrolid", "allergica macrolid", "allergia azitromicina", "allergia eritromicina")) {
+    const all = result.fields.allergie || { stato: "presente" };
+    all.stato = "presente"; all.macrolidi = true;
+    result.fields.allergie = all;
+    result.interpreted.push("⚠ Allergia macrolidi");
+  }
+  if (has("nessuna allergia", "no allergia", "no allergie", "non allergic")) {
+    result.fields.allergie = { stato: "nessuna" };
+    result.interpreted.push("✓ Nessuna allergia nota");
+  }
+
+  // ═══ 4. GBS ═══
+  if (has("gbs positivo", "gbs +", "gbs+", "streptococco b positiv", "gbs pos")) {
+    result.fields.gbsStatus = "positivo";
+    result.interpreted.push("🦠 GBS positivo");
+  } else if (has("gbs negativo", "gbs neg", "gbs -", "gbs−")) {
+    result.fields.gbsStatus = "negativo";
+    result.interpreted.push("🦠 GBS negativo");
+  } else if (has("gbs ignoto", "gbs non eseguito", "gbs sconosciuto", "gbs non disponibile", "tampone non eseguito", "senza tampone gbs")) {
+    result.fields.gbsStatus = "ignoto";
+    result.interpreted.push("🦠 GBS ignoto / non eseguito");
+  }
+
+  // ═══ 5. TEMPERATURA / FEBBRE ═══
+  const tempMatch = q.match(/(?:t|temp|temperatura|febbre)[:\s]*(\d{2}[.,]?\d?)\s*°?/i) || q.match(/(\d{2}[.,]?\d?)\s*°?\s*(?:di febbre|di temperatura|febbre)/i);
+  if (tempMatch) {
+    result.fields.temperatura = parseFloat(tempMatch[1].replace(",", "."));
+    result.interpreted.push(`🌡️ Temperatura: ${result.fields.temperatura}°C`);
+  } else if (has("febbre", "febbrile", "iperpiressia") && !result.fields.temperatura) {
+    result.fields.temperatura = 38.5;
+    result.interpreted.push("🌡️ Febbre (impostata 38.5°C — modificare se diverso)");
+  } else if (has("apirettica", "apiretica", "no febbre", "senza febbre") && !result.fields.temperatura) {
+    result.fields.temperatura = 37;
+    result.interpreted.push("🌡️ Apirettica");
+  }
+
+  // ═══ 6. WBC ═══
+  const wbcMatch = q.match(/(?:wbc|bianchi|leucocit|gb)[:\s]*(\d{3,6})/i) || q.match(/(\d{4,6})\s*(?:wbc|bianchi|leucocit)/i);
+  if (wbcMatch) {
+    result.fields.wbc = parseInt(wbcMatch[1]);
+    result.interpreted.push(`🩸 WBC: ${result.fields.wbc.toLocaleString()}`);
+  }
+
+  // ═══ 7. PCR ═══
+  const crpMatch = q.match(/(?:pcr|crp|proteina c)[:\s]*(\d+[.,]?\d*)/i);
+  if (crpMatch) {
+    result.fields.crp = parseFloat(crpMatch[1].replace(",", "."));
+    result.interpreted.push(`🩸 PCR: ${result.fields.crp} mg/L`);
+  }
+
+  // ═══ 8. ORE ROTTURA ═══
+  const rotMatch = q.match(/(?:rottura|rotte?)\s*(?:da|di)?\s*(\d+[.,]?\d*)\s*(?:h|ore|hr)/i) || q.match(/(\d+[.,]?\d*)\s*(?:h|ore)\s*(?:dalla|di)?\s*rottura/i);
+  if (rotMatch) {
+    result.fields.oreRottura = parseFloat(rotMatch[1].replace(",", "."));
+    result.interpreted.push(`⏱️ Rottura da ${result.fields.oreRottura}h`);
+  }
+
+  // ═══ 9. PESO ═══
+  const pesoMatch = q.match(/(?:peso|kg)[:\s]*(\d{2,3})/i) || q.match(/(\d{2,3})\s*kg/i);
+  if (pesoMatch) {
+    const p = parseInt(pesoMatch[1]);
+    if (p >= 40 && p <= 200) {
+      result.fields.pesoKg = p;
+      result.interpreted.push(`⚖️ Peso: ${p} kg`);
+    }
+  }
+
+  // ═══ 10. FLAGS ═══
+  if (has("g6pd", "favismo")) { result.fields.g6pd = true; result.interpreted.push("🧬 G6PD / Favismo"); }
+  if (has("precedente neonato gbs", "neonato gbs", "precedente gbs neonatale")) { result.fields.precedenteNeonatoGBS = true; result.interpreted.push("👶 Precedente neonato con malattia GBS"); }
+  if (has("batteriuria gbs", "gbs nelle urine", "gbs urine")) { result.fields.batteriuriaGBS = true; result.interpreted.push("🧫 Batteriuria GBS"); }
+  if (has("membrane integre", "membrane intatte")) { result.fields.membraneStatus = "integre"; result.interpreted.push("🫧 Membrane integre"); }
+  if (has("tachicardia fetale", "tachi fetale", "fcf >160", "fcf elevata")) { result.fields.fcFetale = 175; result.interpreted.push("💓 Tachicardia fetale"); }
+  if (has("pretermine", "preterm") && !result.fields.eg) { result.fields.eg = 33; result.interpreted.push("📅 Pretermine (EG impostata 33s — modificare)"); }
+  if (has("a termine", "termine") && !result.fields.eg && !has("pretermine")) { result.fields.eg = 39; result.interpreted.push("📅 A termine (EG impostata 39s — modificare)"); }
+  if (has("primipara", "primigravida", "nullipara")) { result.interpreted.push("ℹ️ Primipara (informazione registrata)"); }
+  if (has("esbl", "multi-resist", "multiresist", "mdr")) { result.interpreted.push("⚠ Germe multiresistente — inserire antibiogramma manualmente"); }
+
+  // ═══ 11. pPROM FASE ═══
+  if (result.scenarios.includes("pprom")) {
+    if (has("esordio travaglio", "appena in travaglio", "travaglio esordio")) {
+      result.fields.fasePprom = "travaglio_esordio";
+      result.interpreted.push("  → pPROM: esordio travaglio");
+    } else if (has("conservativa", "gestione conservativa", "aspettativa")) {
+      result.fields.fasePprom = "conservativa";
+      result.interpreted.push("  → pPROM: gestione conservativa");
+    }
+    if (has("travaglio") && !has("esordio")) {
+      if (!result.scenarios.includes("travaglio")) result.scenarios.push("travaglio");
+    }
+  }
+
+  // Deduplicate scenarios
+  result.scenarios = [...new Set(result.scenarios)];
+
+  return result;
+}
 
 const PATHOGENS = [
   { id: "candida", label: "Candida spp." }, { id: "bv", label: "Vaginosi Batterica" },
@@ -1013,56 +1490,170 @@ function CVSwabInput({ label, value, onChange }) {
   );
 }
 
-function ResultView({ results }) {
+function ResultView({ results, patientData, user }) {
   if (!results || (!results.diagnosi.length && !results.protocollo.length)) return null;
+
+  const handlePrint = () => {
+    window.print();
+  };
+
+  // Build patient summary for print header
+  const pd = patientData || {};
+  const scenarioLabels = (pd.scenarios || []).map(id => {
+    const found = SCENARIOS_INPUT.find(s => s.id === id);
+    return found ? found.label : id;
+  });
+  const allergyText = pd.allergie?.penicilline === "alto" ? "Allergia β-latt ALTO rischio"
+    : pd.allergie?.penicilline === "basso" ? "Allergia β-latt basso rischio"
+    : pd.allergie?.macrolidi ? "Allergia macrolidi" : "Nessuna allergia nota";
+  const gbsText = pd.gbsStatus === "positivo" ? "GBS +" : pd.gbsStatus === "negativo" ? "GBS −" : "GBS ignoto";
+  const now = new Date();
+  const dateStr = `${String(now.getDate()).padStart(2,"0")}/${String(now.getMonth()+1).padStart(2,"0")}/${now.getFullYear()} ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
+
   return (
-    <div style={{ marginTop: 12 }}>
-      <div style={{ fontSize: 16, fontWeight: 700, color: "#1A3C5E", marginBottom: 10, borderBottom: "2px solid #0E7C6B", paddingBottom: 6 }}>
-        📋 PROTOCOLLO TERAPEUTICO PERSONALIZZATO
+    <div className="protocol-result" style={{ marginTop: 12 }}>
+      {/* ═══ @MEDIA PRINT STYLES ═══ */}
+      <style>{`
+        @media print {
+          /* Hide everything except the protocol result */
+          body > * { visibility: hidden !important; }
+          .protocol-result, .protocol-result * { visibility: visible !important; }
+          .protocol-result { position: absolute; left: 0; top: 0; width: 100%; padding: 0 20px; }
+
+          /* Show print-only header */
+          .print-header { display: block !important; }
+          .print-footer { display: block !important; }
+
+          /* Hide print button and screen-only elements */
+          .no-print, button.no-print { display: none !important; }
+
+          /* Clean backgrounds for paper */
+          .protocol-result { background: white !important; color: black !important; }
+          .protocol-result div { box-shadow: none !important; }
+
+          /* Keep colored left borders for severity but lighten backgrounds */
+          .diag-card { background: #f9f9f9 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          .alert-card { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+          /* Typography */
+          .protocol-result { font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif; font-size: 11pt; line-height: 1.45; }
+          .protocol-result .section-title { font-size: 13pt; color: #1A3C5E; border-color: #1A3C5E; }
+          .protocol-result .drug-name { font-size: 11pt; }
+          .protocol-result .drug-dose { font-size: 10.5pt; }
+          .protocol-result .drug-note { font-size: 9pt; color: #555; }
+          .protocol-result .fonti-text { font-size: 8pt; }
+
+          /* Page setup */
+          @page { margin: 15mm 12mm; size: A4; }
+
+          /* Avoid breaking inside cards */
+          .proto-card, .diag-card, .alert-card { break-inside: avoid; page-break-inside: avoid; }
+        }
+
+        /* Hide print elements on screen */
+        @media screen {
+          .print-header { display: none; }
+          .print-footer { display: none; }
+        }
+      `}</style>
+
+      {/* ═══ PRINT-ONLY HEADER ═══ */}
+      <div className="print-header" style={{ marginBottom: 20, paddingBottom: 14, borderBottom: "2.5px solid #1A3C5E" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <div style={{ fontSize: "16pt", fontWeight: 800, color: "#1A3C5E", letterSpacing: 0.5 }}>PROTOCOLLO OSTETRICO</div>
+            <div style={{ fontSize: "10pt", color: "#555", marginTop: 2 }}>Clinica Ostetrico-Ginecologica — DIM — University of Bari "Aldo Moro"</div>
+          </div>
+          <div style={{ textAlign: "right", fontSize: "9pt", color: "#777" }}>
+            <div>Generato: {dateStr}</div>
+            <div>Dott. {user?.fullName || "—"}</div>
+          </div>
+        </div>
+        <div style={{ marginTop: 10, padding: "8px 12px", background: "#f5f7f9", borderRadius: 4, fontSize: "9.5pt" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 20px" }}>
+            {pd.eg && <span><strong>EG:</strong> {pd.eg} settimane</span>}
+            {pd.pesoKg && <span><strong>Peso:</strong> {pd.pesoKg} kg</span>}
+            <span><strong>Allergie:</strong> {allergyText}</span>
+            <span><strong>{gbsText}</strong></span>
+            {pd.temperatura && pd.temperatura >= 37.5 && <span><strong>T:</strong> {pd.temperatura}°C</span>}
+            {pd.wbc && pd.wbc > 15000 && <span><strong>WBC:</strong> {pd.wbc.toLocaleString()}</span>}
+            {pd.crp && pd.crp > 5 && <span><strong>PCR:</strong> {pd.crp} mg/L</span>}
+            {pd.oreRottura && <span><strong>Rottura:</strong> {pd.oreRottura}h</span>}
+          </div>
+          <div style={{ marginTop: 4, color: "#1A3C5E" }}><strong>Scenario:</strong> {scenarioLabels.join(" + ") || "—"}</div>
+        </div>
       </div>
 
+      {/* ═══ SCREEN TITLE + PRINT BUTTON ═══ */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, borderBottom: "2px solid #0E7C6B", paddingBottom: 6 }}>
+        <div className="section-title" style={{ fontSize: 16, fontWeight: 700, color: "#1A3C5E" }}>
+          📋 PROTOCOLLO TERAPEUTICO PERSONALIZZATO
+        </div>
+        <button className="no-print" onClick={handlePrint}
+          style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", background: "linear-gradient(135deg, #1A3C5E, #2C3E50)",
+            color: "white", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", letterSpacing: 0.3,
+            transition: "opacity 0.2s" }}
+          onMouseEnter={e => e.target.style.opacity = "0.85"}
+          onMouseLeave={e => e.target.style.opacity = "1"}>
+          <span style={{ fontSize: 16 }}>🖨️</span> Stampa / PDF
+        </button>
+      </div>
+
+      {/* ═══ DIAGNOSI ═══ */}
       {results.diagnosi.map((d, i) => (
-        <div key={i} style={{ background: d.severity === "danger" ? "#FDEDEC" : d.severity === "warning" ? "#FEF9E7" : "#EAF0F5",
+        <div key={i} className="diag-card" style={{ background: d.severity === "danger" ? "#FDEDEC" : d.severity === "warning" ? "#FEF9E7" : "#EAF0F5",
           borderLeft: `4px solid ${d.severity === "danger" ? "#C0392B" : d.severity === "warning" ? "#F39C12" : "#2980B9"}`,
           padding: "8px 12px", borderRadius: 6, marginBottom: 8 }}>
           <div style={{ fontWeight: 700, fontSize: 14, color: d.severity === "danger" ? "#C0392B" : d.severity === "warning" ? "#E67E22" : "#2980B9" }}>{d.label}</div>
-          <div style={{ fontSize: 12, color: "#5D6D7E" }}>{d.detail}</div>
+          <div className="drug-note" style={{ fontSize: 12, color: "#5D6D7E" }}>{d.detail}</div>
         </div>
       ))}
 
+      {/* ═══ PROTOCOLLO ═══ */}
       {results.protocollo.map((p, i) => (
-        <div key={i} style={{ background: "white", border: "1px solid #E0E0E0", borderRadius: 8, padding: "10px 14px", marginBottom: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#0E7C6B", marginBottom: 6, borderBottom: "1px solid #E8F6F3", paddingBottom: 4 }}>{p.label}</div>
+        <div key={i} className="proto-card" style={{ background: "white", border: "1px solid #E0E0E0", borderRadius: 8, padding: "10px 14px", marginBottom: 10 }}>
+          <div className="section-title" style={{ fontSize: 13, fontWeight: 700, color: "#0E7C6B", marginBottom: 6, borderBottom: "1px solid #E8F6F3", paddingBottom: 4 }}>{p.label}</div>
           {p.items.map((item, j) => (
             <div key={j} style={{ padding: "6px 0", borderBottom: j < p.items.length - 1 ? "1px dotted #ECF0F1" : "none" }}>
-              <div style={{ fontWeight: 600, color: "#1A3C5E", fontSize: 13 }}>{item.drug}</div>
-              <div style={{ fontSize: 12, color: "#34495E" }}>{item.dose}</div>
-              {item.notes && <div style={{ fontSize: 11, color: "#7F8C8D", fontStyle: "italic" }}>{item.notes}</div>}
+              <div className="drug-name" style={{ fontWeight: 600, color: "#1A3C5E", fontSize: 13 }}>{item.drug}</div>
+              <div className="drug-dose" style={{ fontSize: 12, color: "#34495E" }}>{item.dose}</div>
+              {item.notes && <div className="drug-note" style={{ fontSize: 11, color: "#7F8C8D", fontStyle: "italic" }}>{item.notes}</div>}
             </div>
           ))}
         </div>
       ))}
 
+      {/* ═══ ALERTS ═══ */}
       {results.alerts.map((a, i) => {
         const styles = { danger: { bg: "#FDEDEC", border: "#C0392B", icon: "🚫" }, warning: { bg: "#FEF9E7", border: "#F39C12", icon: "⚠️" }, info: { bg: "#EAF0F5", border: "#2980B9", icon: "ℹ️" } };
         const s = styles[a.type] || styles.info;
-        return (<div key={i} style={{ background: s.bg, borderLeft: `4px solid ${s.border}`, padding: "7px 11px", marginBottom: 5, borderRadius: 4, fontSize: 12 }}>
+        return (<div key={i} className="alert-card" style={{ background: s.bg, borderLeft: `4px solid ${s.border}`, padding: "7px 11px", marginBottom: 5, borderRadius: 4, fontSize: 12 }}>
           <span style={{ marginRight: 5 }}>{s.icon}</span>{a.text}
         </div>);
       })}
 
+      {/* ═══ MONITORAGGIO ═══ */}
       {results.monitoraggio.length > 0 && (
-        <div style={{ background: "#F4F6F7", borderRadius: 8, padding: "10px 14px", marginTop: 8 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#1A3C5E", marginBottom: 4 }}>📊 Monitoraggio</div>
+        <div className="proto-card" style={{ background: "#F4F6F7", borderRadius: 8, padding: "10px 14px", marginTop: 8 }}>
+          <div className="section-title" style={{ fontSize: 13, fontWeight: 700, color: "#1A3C5E", marginBottom: 4 }}>📊 Monitoraggio</div>
           {results.monitoraggio.map((m, i) => <div key={i} style={{ fontSize: 12, color: "#34495E", padding: "2px 0" }}>• {m}</div>)}
         </div>
       )}
 
+      {/* ═══ FONTI ═══ */}
       {results.fonti.length > 0 && (
-        <div style={{ fontSize: 10, color: "#95A5A6", marginTop: 10, fontStyle: "italic" }}>
+        <div className="fonti-text" style={{ fontSize: 10, color: "#95A5A6", marginTop: 10, fontStyle: "italic" }}>
           Fonti: {results.fonti.join(" · ")}
         </div>
       )}
+
+      {/* ═══ PRINT-ONLY FOOTER ═══ */}
+      <div className="print-footer" style={{ marginTop: 20, paddingTop: 10, borderTop: "1px solid #ccc", fontSize: "8pt", color: "#999" }}>
+        <div style={{ display: "flex", justifyContent: "space-between" }}>
+          <span>Strumento di supporto decisionale — NON sostituisce il giudizio clinico</span>
+          <span>Dott. {user?.fullName || "—"} · Clinica Ostetrica · Univ. Bari · {now.getFullYear()}</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1126,13 +1717,24 @@ const PROTOCOL_CARDS = [
     { drug: "Indometacina (Indocid®)", dose: "50-100mg rettale → 25mg per os/6h", durata: "Max 48h. SOLO <32s", note: "STOP a 32s: rischio chiusura dotto arterioso", fonte: "ACOG; SMFM" },
   ], footer: "Tocolisi: SOLO per 48h per completare CCS. MAI tocolisi di mantenimento (ACOG PB #217; ORACLE II). Controindicata se: infezione, abruption, travaglio avanzato. Dopo 7gg antibiotici: STOP tutto." },
 
+  { id: "tpl_integre", title: "Travaglio Pretermine a Membrane Integre (TPL)", icon: "⚡", rows: [
+    { drug: "Antibiotici di latenza (Mercer)", dose: "CONTROINDICATI", durata: "—", note: "ORACLE II Kenyon Lancet 2001: follow-up 7aa → PCI 3,3% vs 1,7%. NESSUN beneficio e rischio di danno", fonte: "ORACLE II Lancet 2001/2008" },
+    { drug: "IAP GBS — se GBS POSITIVO", dose: "Pen G 5 MUI→2,5-3 MUI/4h o Amplital® 2g→1g/4h", durata: "Fino al parto", note: "Se GBS positivo noto", fonte: "ACOG CO #797 2020" },
+    { drug: "IAP GBS — se GBS IGNOTO", dose: "Pen G 5 MUI→2,5-3 MUI/4h o Amplital® 2g→1g/4h", durata: "Fino al parto", note: "Prematurità = FR per malattia GBS neonatale → IAP empirica", fonte: "ACOG CO #797 2020" },
+    { drug: "IAP GBS — se GBS NEGATIVO", dose: "NESSUN antibiotico", durata: "—", note: "GBS negativo valido (<5 sett) → no antibiotici di nessun tipo", fonte: "ACOG CO #797 2020" },
+    { drug: "Betametasone (Bentelan®)", dose: "12mg IM × 2 (ogni 24h)", durata: "Se 23-33+6s", note: "CCS maturazione polmonare", fonte: "ACOG; SMFM" },
+    { drug: "MgSO₄ neuroprotezione", dose: "4g IV bolo → 1g/h (max 24h)", durata: "Se <32s e parto imminente", note: "↓ PCI OR 0,69 (ACTOMgSO4 JAMA 2003)", fonte: "ACOG" },
+    { drug: "Tocolisi (per 48h)", dose: "Atosiban o Nifedipina o Indometacina (<32s)", durata: "Max 48h", note: "SOLO per completare CCS. MAI mantenimento", fonte: "RCOG; NICE NG25; SIGO" },
+  ], footer: "⚠ CONCETTO CHIAVE: membrane INTEGRE + travaglio pretermine ≠ pPROM. L'unico antibiotico lecito è la IAP GBS se lo stato GBS lo richiede. Se il travaglio si arresta: STOP IAP, monitoraggio. Cerchiaggio: NON indicato in travaglio attivo." },
+
   { id: "prom_termine", title: "PROM a Termine (≥37s)", icon: "⏰", rows: [
     { drug: "NO antibiotici di latenza", dose: "—", durata: "—", note: "A termine non servono latenza (ACOG PB #217)", fonte: "ACOG PB #217 2020" },
-    { drug: "IAP GBS se indicata", dose: "Pen G 5 MUI IV → 2,5-3 MUI/4h", durata: "Fino al parto", note: "Se GBS+, o GBS ignoto + rottura ≥18h o febbre", fonte: "ACOG CO #797 2020" },
+    { drug: "IAP GBS se indicata", dose: "Pen G 5 MUI→2,5-3 MUI/4h o Amplital® 2g→1g/4h", durata: "Fino al parto", note: "Se GBS+, o GBS ignoto + rottura ≥18h o febbre", fonte: "ACOG CO #797 2020" },
   ], footer: "Indurre o attendere 12-24h (ACOG/SIGO). NICE: indurre a 24h. Tampone GBS valido entro 5 settimane." },
 
   { id: "iap_gbs", title: "Profilassi GBS Intrapartum (IAP)", icon: "🛡️", rows: [
-    { drug: "Penicillina G (sodica)", dose: "5 MUI IV carico → 2,5-3 MUI/4h", durata: "Fino al parto", note: "1ª scelta — spettro ristretto", fonte: "ACOG CO #797 2020" },
+    { drug: "Penicillina G (sodica)", dose: "5 MUI IV carico → 2,5-3 MUI/4h", durata: "Fino al parto", note: "1ª scelta LG — spettro ristretto", fonte: "ACOG CO #797 2020" },
+    { drug: "Ampicillina (Amplital®)", dose: "2g IV carico → 1g IV/4h", durata: "Fino al parto", note: "Alternativa equivalente (ACOG CO #797). Più disponibile in IT", fonte: "ACOG CO #797 2020" },
     { drug: "Ampicillina (Amplital®)", dose: "2g IV carico → 1g/4h", durata: "Fino al parto", note: "Alternativa se Pen G non disponibile", fonte: "ACOG CO #797 2020" },
     { drug: "Cefazolina (Cefamezin®)", dose: "2g IV carico → 1g/8h", durata: "Fino al parto", note: "Allergia basso rischio (orticaria, rash)", fonte: "ACOG CO #797 2020" },
     { drug: "Clindamicina (Dalacin®)", dose: "900mg IV ogni 8h", durata: "Fino al parto", note: "Allergia alto rischio + GBS sensibile. ⚠ Possibile sottodosaggio PK (Muller 2010)", fonte: "ACOG CO #797 2020" },
@@ -1219,7 +1821,8 @@ const FORMULARY_DATA = [
     { drug: "Amoxicillina (Zimox®)", dose: "250-500mg per os ogni 8h × 5gg", ind: "Fase OS (gg 3-7)", ci: "—", fonte: "Mercer JAMA 1997" },
   ]},
   { cat: "IAP / Corioamnionite", items: [
-    { drug: "Penicillina G (sodica)", dose: "5 MUI IV → 2,5-3 MUI/4h", ind: "IAP GBS 1ª scelta", ci: "Allergia penicilline", fonte: "ACOG CO #797" },
+    { drug: "Penicillina G (sodica)", dose: "5 MUI IV → 2,5-3 MUI/4h", ind: "IAP GBS 1ª scelta (spettro ristretto)", ci: "Allergia penicilline. Spesso non disponibile in IT", fonte: "ACOG CO #797" },
+    { drug: "Ampicillina (Amplital®) per IAP", dose: "2g IV carico → 1g IV ogni 4h", ind: "IAP GBS alternativa equivalente. Disponibile ovunque", ci: "Allergia penicilline", fonte: "ACOG CO #797" },
     { drug: "Ampicillina (Amplital®)", dose: "2g IV → 1g/4h", ind: "IAP alt. + corioamnionite", ci: "Allergia penicilline", fonte: "ACOG CO #797; CO #712" },
     { drug: "Cefazolina (Cefamezin®)", dose: "2g IV → 1g/8h", ind: "IAP allergia basso rischio", ci: "Allergia cefalosporine", fonte: "ACOG CO #797" },
     { drug: "Clindamicina (Dalacin®)", dose: "900mg IV ogni 8h", ind: "IAP allergia alto + GBS S", ci: "PK subterapeutica (Muller 2010)", fonte: "ACOG CO #797" },
@@ -1274,6 +1877,14 @@ const SAFETY_DATA = [
   { drug: "Ertapenem (Invanz®)", i: "✓", ii: "✓", iii: "✓", note: "Dati limitati ma rassicuranti. Per ESBL+" },
   { drug: "Flucloxacillina", i: "✓", ii: "✓", iii: "✓", note: "Sicura. Anti-stafilococcica. Compatibile allattamento" },
   { drug: "Pristinamicina", i: "⚠", ii: "⚠", iii: "⚠", note: "Dati molto limitati. Solo per M.gen R — consulenza infettivologica" },
+  { drug: "Aztreonam (Azactam®)", i: "✓", ii: "✓", iii: "✓", note: "Monobattamico. Cross-reattività β-latt <1%. Opzione chiave allergia alto rischio" },
+  { drug: "Meropenem", i: "⚠", ii: "⚠", iii: "⚠", note: "Carbapenemico. Case series rassicuranti. Riserva sepsi grave/ESBL+" },
+  { drug: "Teicoplanina (Targosid®)", i: "⚠", ii: "⚠", iii: "⚠", note: "Glicopeptide. Alternativa IT a vancomicina. Dati scarsi. Off-label" },
+  { drug: "Amikacina", i: "⚠", ii: "⚠", iii: "⚠", note: "Aminoglicoside. Come gentamicina. Solo per genta-R. TDM obbligatorio" },
+  { drug: "Claritromicina", i: "⚠", ii: "⚠", iii: "⚠", note: "Dati animali sfavorevoli. Solo se no alternative (azitro/eritro)" },
+  { drug: "Linezolid", i: "⚠", ii: "⚠", iii: "⚠", note: "Oxazolidinone. Dati molto limitati. Riserva MRSA/VRE. Consulenza infettivologica" },
+  { drug: "Daptomicina", i: "⚠", ii: "⚠", iii: "⚠", note: "Lipopeptide. Nessun dato in gravidanza. Riserva assoluta Gram+ MDR" },
+  { drug: "Colistina", i: "✗", ii: "✗", iii: "✗", note: "Polimixina. Nefro/neurotossica. Solo se vita materna a rischio — pan-resistenti" },
 ];
 
 function RefCard({ title, rows, footer, color }) {
@@ -1397,10 +2008,34 @@ function SafetyTable() {
   );
 }
 
+// ═══════════════════════════════════════════════════════════════
+// ACCESS CODE — change this to set a new code for your users
+// ═══════════════════════════════════════════════════════════════
+const ACCESS_CODE = "BARI2026";
+
 export default function App() {
+  // ═══ AUTH STATE ═══
+  const [user, setUser] = useState(null);
+  const [loginForm, setLoginForm] = useState({ nome: "", cognome: "", codice: "" });
+  const [loginError, setLoginError] = useState("");
+
+  const handleLogin = () => {
+    const { nome, cognome, codice } = loginForm;
+    if (!nome.trim() || !cognome.trim()) { setLoginError("Inserisci nome e cognome"); return; }
+    if (codice.trim().toUpperCase() !== ACCESS_CODE) { setLoginError("Codice di accesso non valido"); return; }
+    const u = { nome: nome.trim(), cognome: cognome.trim(), fullName: `${nome.trim()} ${cognome.trim()}` };
+    setUser(u);
+    setLoginError("");
+  };
+
+  const handleLogout = () => {
+    setUser(null);
+  };
+
+  // ═══ ALL APP HOOKS (must be before any conditional return) ═══
   const [data, setData] = useState({
     scenario: null, scenarios: [], eg: null, pesoKg: null, creatinina: null,
-    allergie: { stato: "non_noto" }, // stato: "nessuna", "non_noto", or has specific classes
+    allergie: { stato: "non_noto" },
     temperatura: null, fcMaterna: null, fcFetale: null, tempPersistente: false,
     wbc: null, crp: null, gbsStatus: null, gbsData: null,
     membraneStatus: null, oreRottura: null, tamponeCVResult: null, tamponeCV_ABG: {},
@@ -1410,13 +2045,8 @@ export default function App() {
     batteriuriaGBS: false, tcElettivoMI: false, ivuRicorrenti: false,
     cerchiaggio: false, gbsPrecedenteGrav: false, fasePprom: null,
     saccoInVagina: false, dilatazioneCervicale: null, idronefrosiGrado: null, doloreColica: null, sottoscenarioIC: null,
-    // Anamnesi farmacologica
-    antibioticiInCorso: "no", // "no" | "si_latenza" | "si_ivu" | "si_profilassi" | "si_altro"
-    abxInCorsoNome: "", // nome farmaco in corso
-    abxInCorsoGiorni: null, // giorni di terapia già fatti
-    // Emocolture
-    emocoltura: null, // "non_eseguita" | "in_attesa" | "negativa" | "positiva"
-    emocolturaGerme: "",
+    antibioticiInCorso: "no", abxInCorsoNome: "", abxInCorsoGiorni: null,
+    emocoltura: null, emocolturaGerme: "",
   });
 
   const [showResult, setShowResult] = useState(false);
@@ -1576,23 +2206,169 @@ export default function App() {
   const canGenerate = data.scenarios.length > 0 && data.eg;
 
   const [page, setPage] = useState("generator");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResult, setSearchResult] = useState(null);
 
+  const handleSmartSearch = useCallback((query) => {
+    if (!query.trim()) { setSearchResult(null); return; }
+    const parsed = parseSmartQuery(query);
+    if (parsed.scenarios.length === 0 && Object.keys(parsed.fields).length === 0) {
+      setSearchResult({ interpreted: ["❓ Nessuno scenario riconosciuto. Prova con: 'cistite 30 settimane allergia penicillina' o 'pPROM 28s GBS ignoto'"], scenarios: [], fields: {} });
+      return;
+    }
+    setSearchResult(parsed);
+  }, []);
+
+  const applySearch = useCallback(() => {
+    if (!searchResult || searchResult.scenarios.length === 0) return;
+    setData(prev => {
+      const newData = { ...prev };
+      // Set scenarios
+      newData.scenarios = searchResult.scenarios;
+      newData.scenario = searchResult.scenarios[0];
+      // Apply all parsed fields
+      for (const [key, value] of Object.entries(searchResult.fields)) {
+        newData[key] = value;
+      }
+      return newData;
+    });
+    setShowResult(true);
+    setPage("generator");
+    setSearchQuery("");
+    setSearchResult(null);
+  }, [searchResult]);
+
+  // ═══ CONDITIONAL RENDER: LOGIN or MAIN APP ═══
+  if (!user) {
+    return (
+      <div style={{ fontFamily: "'Segoe UI', sans-serif", maxWidth: 440, margin: "60px auto", padding: "0 16px" }}>
+        <div style={{ background: "white", borderRadius: 14, padding: "32px 28px", boxShadow: "0 4px 24px rgba(0,0,0,0.08)", border: "1px solid #E0E0E0" }}>
+          <div style={{ textAlign: "center", marginBottom: 24 }}>
+            <div style={{ fontSize: 36, marginBottom: 8 }}>💊</div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: "#1A3C5E", letterSpacing: 0.3 }}>Antibiotici in Gravidanza</div>
+            <div style={{ fontSize: 12, color: "#7F8C8D", marginTop: 4 }}>Guida Clinica · Clinica Ostetrica · Univ. Bari</div>
+          </div>
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#1A3C5E", marginBottom: 4 }}>Nome</label>
+            <input type="text" value={loginForm.nome} onChange={e => setLoginForm(p => ({ ...p, nome: e.target.value }))}
+              onKeyDown={e => e.key === "Enter" && handleLogin()} placeholder="Mario"
+              style={{ width: "100%", padding: "10px 12px", border: "1.5px solid #D5DBDB", borderRadius: 8, fontSize: 14, outline: "none", boxSizing: "border-box" }} />
+          </div>
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#1A3C5E", marginBottom: 4 }}>Cognome</label>
+            <input type="text" value={loginForm.cognome} onChange={e => setLoginForm(p => ({ ...p, cognome: e.target.value }))}
+              onKeyDown={e => e.key === "Enter" && handleLogin()} placeholder="Rossi"
+              style={{ width: "100%", padding: "10px 12px", border: "1.5px solid #D5DBDB", borderRadius: 8, fontSize: 14, outline: "none", boxSizing: "border-box" }} />
+          </div>
+          <div style={{ marginBottom: 20 }}>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#1A3C5E", marginBottom: 4 }}>Codice di Accesso</label>
+            <input type="password" value={loginForm.codice} onChange={e => setLoginForm(p => ({ ...p, codice: e.target.value }))}
+              onKeyDown={e => e.key === "Enter" && handleLogin()} placeholder="Inserisci il codice fornito"
+              style={{ width: "100%", padding: "10px 12px", border: "1.5px solid #D5DBDB", borderRadius: 8, fontSize: 14, outline: "none", boxSizing: "border-box", letterSpacing: 2 }} />
+          </div>
+          {loginError && (
+            <div style={{ background: "#FDEDEC", color: "#C0392B", padding: "8px 12px", borderRadius: 6, fontSize: 12, fontWeight: 600, marginBottom: 14, textAlign: "center" }}>
+              {loginError}
+            </div>
+          )}
+          <button onClick={handleLogin}
+            style={{ width: "100%", padding: "12px", background: "linear-gradient(135deg, #1A3C5E, #0E7C6B)", color: "white",
+              border: "none", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: "pointer", letterSpacing: 0.5 }}>
+            Accedi
+          </button>
+          <div style={{ textAlign: "center", fontSize: 10, color: "#BDC3C7", marginTop: 16 }}>
+            Developed by G.M. Baldini · DIM · University of Bari "Aldo Moro"
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ═══ MAIN APP (authenticated) ═══
   return (
     <div style={{ fontFamily: "'Segoe UI', sans-serif", maxWidth: 780, margin: "0 auto", padding: "0 8px 20px" }}>
       <div style={{ background: "linear-gradient(135deg, #1A3C5E, #0E7C6B)", color: "white", padding: "14px 18px", borderRadius: "0 0 12px 12px", marginBottom: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div>
             <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: 0.5 }}>Antibiotici in Gravidanza</div>
-            <div style={{ fontSize: 11, opacity: 0.8 }}>Guida Clinica — Baldini · U.O. Clinica Ostetrica · Univ. Bari</div>
+            <div style={{ fontSize: 11, opacity: 0.8 }}>Guida Clinica · Clinica Ostetrica · Univ. Bari</div>
           </div>
-          <select value={page} onChange={e => setPage(e.target.value)}
-            style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid rgba(255,255,255,0.4)", background: "rgba(255,255,255,0.15)", color: "white", fontSize: 12, fontWeight: 600, cursor: "pointer", maxWidth: 200 }}>
-            <option value="generator" style={{color:"#1A3C5E"}}>🧮 Protocollo Personalizzato</option>
-            <option value="protocols" style={{color:"#1A3C5E"}}>📋 Protocolli per Scenario</option>
-            <option value="formulary" style={{color:"#1A3C5E"}}>💊 Prontuario Farmaceutico</option>
-            <option value="safety" style={{color:"#1A3C5E"}}>🛡️ Sicurezza per Trimestre</option>
-          </select>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <select value={page} onChange={e => setPage(e.target.value)}
+              style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid rgba(255,255,255,0.4)", background: "rgba(255,255,255,0.15)", color: "white", fontSize: 12, fontWeight: 600, cursor: "pointer", maxWidth: 200 }}>
+              <option value="generator" style={{color:"#1A3C5E"}}>🧮 Protocollo Personalizzato</option>
+              <option value="protocols" style={{color:"#1A3C5E"}}>📋 Protocolli per Scenario</option>
+              <option value="formulary" style={{color:"#1A3C5E"}}>💊 Prontuario Farmaceutico</option>
+              <option value="safety" style={{color:"#1A3C5E"}}>🛡️ Sicurezza per Trimestre</option>
+            </select>
+          </div>
         </div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(255,255,255,0.2)" }}>
+          <div style={{ fontSize: 11, opacity: 0.9 }}>
+            <span style={{ marginRight: 4 }}>👤</span>
+            <strong>Dott. {user.fullName}</strong>
+          </div>
+          <button onClick={handleLogout}
+            style={{ padding: "3px 10px", background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)",
+              borderRadius: 5, color: "rgba(255,255,255,0.8)", fontSize: 10, cursor: "pointer" }}>
+            Esci
+          </button>
+        </div>
+      </div>
+
+      {/* ═══ SMART CLINICAL SEARCH ═══ */}
+      <div style={{ background: "white", borderRadius: 10, padding: "10px 14px", marginBottom: 10, border: "1.5px solid #D5DBDB" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span style={{ fontSize: 18 }}>🔍</span>
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={e => { setSearchQuery(e.target.value); handleSmartSearch(e.target.value); }}
+            onKeyDown={e => { if (e.key === "Enter" && searchResult?.scenarios?.length > 0) applySearch(); }}
+            placeholder="Ricerca clinica intelligente — es: 'cistite 30 settimane allergia penicillina' o 'pPROM 28s GBS ignoto febbre 38.5'"
+            style={{ flex: 1, padding: "10px 12px", border: "1.5px solid #E0E0E0", borderRadius: 8, fontSize: 13, color: "#2C3E50", outline: "none", background: "#FAFBFC" }}
+          />
+          {searchQuery && (
+            <button onClick={() => { setSearchQuery(""); setSearchResult(null); }}
+              style={{ padding: "6px 10px", background: "none", border: "none", cursor: "pointer", fontSize: 16, color: "#95A5A6" }}>✕</button>
+          )}
+        </div>
+        {searchResult && searchResult.interpreted.length > 0 && (
+          <div style={{ marginTop: 10 }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+              {searchResult.interpreted.map((item, i) => (
+                <span key={i} style={{
+                  display: "inline-block", padding: "4px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600,
+                  background: item.startsWith("❓") ? "#FDEDEC" : item.startsWith("⚠") ? "#FEF9E7" : item.startsWith("📋") ? "#F0F4F8" : item.startsWith("  →") ? "#EBF5FB" : "#E8F6F3",
+                  color: item.startsWith("❓") ? "#C0392B" : item.startsWith("⚠") ? "#E67E22" : "#0E7C6B",
+                }}>{item}</span>
+              ))}
+            </div>
+            {searchResult.scenarios.length > 0 && (
+              <button onClick={applySearch}
+                style={{ width: "100%", padding: "10px", background: "linear-gradient(135deg, #0E7C6B, #1A3C5E)", color: "white",
+                  border: "none", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer", letterSpacing: 0.3 }}>
+                ⚡ Applica e genera protocollo — {searchResult.scenarios.map(s => SCENARIOS_INPUT.find(x => x.id === s)?.icon || "").join(" ")} Premi Invio
+              </button>
+            )}
+            {searchResult.scenarios.length === 0 && !searchResult.interpreted.some(i => i.startsWith("❓")) && (
+              <div style={{ fontSize: 11, color: "#95A5A6", textAlign: "center", padding: 4 }}>
+                Aggiungi uno scenario clinico per generare il protocollo (es: 'cistite', 'pPROM', 'travaglio')
+              </div>
+            )}
+          </div>
+        )}
+        {!searchResult && !searchQuery && (
+          <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {["Cistite 30s", "pPROM 28s GBS ignoto", "PROM 39s rottura 20h", "Travaglio 38s GBS+ allergia penicillina alto", "Colica renale 33s pionefrosi", "Candidosi 20s"].map(ex => (
+              <button key={ex} onClick={() => { setSearchQuery(ex); handleSmartSearch(ex); }}
+                style={{ padding: "4px 10px", borderRadius: 15, border: "1px solid #E0E0E0", background: "#FAFBFC",
+                  fontSize: 10, color: "#7F8C8D", cursor: "pointer" }}>
+                {ex}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* ═══ REFERENCE PAGES ═══ */}
@@ -1795,10 +2571,15 @@ export default function App() {
           </>
         )}
 
-        {/* Tampone CV per sensibilità GBS clindamicina — visibile SEMPRE per IAP */}
-        {!data.scenarios.includes("cervicovaginale") && (
-          <InputField label="Antibiogramma GBS (dal tampone vagino-rettale)" hint="Utile per la scelta della IAP se allergia a penicilline: clindamicina S o R?">
-            <CVSwabInput label="Sensibilità GBS (clicca S/I/R — almeno clindamicina)" value={data.tamponeCV_ABG} onChange={v => update("tamponeCV_ABG", v)} />
+        {/* Sensibilità clindamicina GBS — visibile SOLO quando GBS POSITIVO */}
+        {data.gbsStatus === "positivo" && (
+          <InputField label="Antibiogramma GBS: sensibilità alla Clindamicina" hint="⚠ CRUCIALE se allergia a penicilline: determina se usare Dalacin® (clinda S) o Vancotex® (clinda R). ACOG CO #797: richiedere SEMPRE antibiogramma con clindamicina quando si isola GBS">
+            <Select value={data.tamponeCV_ABG?.clindamicina || null} onChange={v => update("tamponeCV_ABG", { ...data.tamponeCV_ABG, clindamicina: v })}
+              options={[
+                { value: "S", label: "Sensibile (S) → Dalacin® disponibile come alternativa IAP" },
+                { value: "R", label: "Resistente (R) → Vancotex® necessaria se allergia alto rischio" },
+                { value: "non_testata", label: "Non testata / Non disponibile → ACOG raccomanda vancomicina per precauzione" },
+              ]} />
           </InputField>
         )}
 
@@ -1836,6 +2617,7 @@ export default function App() {
             <Select value={data.fasePprom} onChange={v => update("fasePprom", v)}
               options={[
                 { value: "conservativa", label: "Gestione conservativa — inizio/in corso latenza antibiotica" },
+                { value: "travaglio_esordio", label: "In TRAVAGLIO — pPROM appena diagnosticata, antibiotici NON ancora iniziati" },
                 { value: "travaglio_in_latenza", label: "In TRAVAGLIO — durante la fase IV della latenza (antibiotici IV in corso)" },
                 { value: "travaglio_in_latenza_os", label: "In TRAVAGLIO — durante la fase OS della latenza (gg 3-7, antibiotici orali)" },
                 { value: "travaglio_post_latenza", label: "In TRAVAGLIO — dopo completamento latenza (antibiotici sospesi)" },
@@ -1998,10 +2780,10 @@ export default function App() {
       {!canGenerate && <div style={{ textAlign: "center", fontSize: 11, color: "#95A5A6" }}>Compila almeno: scenario clinico + epoca gestazionale</div>}
 
       {/* ═══ RESULTS ═══ */}
-      {results && <ResultView results={results} />}
+      {results && <ResultView results={results} patientData={data} user={user} />}
 
       <div style={{ textAlign: "center", fontSize: 9, color: "#BDC3C7", marginTop: 16 }}>
-        Strumento di supporto decisionale — NON sostituisce il giudizio clinico · Baldini 2026 · Univ. Bari
+        Strumento di supporto decisionale — NON sostituisce il giudizio clinico · Developed by G.M. Baldini · Univ. Bari
       </div>
       </div>}
     </div>
